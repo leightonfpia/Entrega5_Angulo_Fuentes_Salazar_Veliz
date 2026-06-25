@@ -1,5 +1,5 @@
 ---
-title: "Redes Sociales y Productividad Laboral"
+title: "Satisfacción y Productividad Laboral"
 subtitle: "¿Cuánto explica la satisfacción laboral la productividad real?"
 author: "Patricia Angulo · Pía Fuentes · Martín Salazar · Benjamín Veliz"
 date: "Junio 2026"
