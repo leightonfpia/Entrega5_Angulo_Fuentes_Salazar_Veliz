@@ -1,0 +1,451 @@
+---
+title: "Redes Sociales y Productividad Laboral"
+subtitle: "¿Cuánto explica la satisfacción laboral la productividad real?"
+author: "Patricia Angulo · Pía Fuentes · Martín Salazar · Benjamín Veliz"
+date: "Junio 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+---
+
+# Introducción
+
+El uso de redes sociales forma parte del cotidiano de trabajadores y estudiantes. Existe la
+percepción generalizada de que mayor tiempo en redes sociales implica menor productividad.
+Este proyecto busca cuantificar esa relación mediante un modelo de regresión lineal múltiple
+(MLR), y compararlo con un árbol de decisión como segundo modelo de referencia.
+
+**Variable objetivo (Y):** `actual_productivity_score` — productividad real del individuo,
+medida en una escala continua. Se eligió esta variable por sobre `perceived_productivity_score`
+porque refleja el output real del individuo, independiente de su estado de ánimo o autoestima.
+Ambas variables tienen una correlación de r > 0.9, pero la productividad real es más relevante
+para la toma de decisiones organizacionales.
+
+**Pregunta central:** ¿Qué variables predicen mejor la productividad real, y con qué magnitud?
+
+**Decisión que apoya el análisis:** ¿Vale la pena intervenir en la satisfacción laboral para
+mejorar la productividad, en lugar de restringir el uso de redes sociales?
+
+---
+
+# Objetivos del Proyecto
+
+## Objetivos propuestos
+
+El proyecto fue planteado con tres niveles de entregables:
+
+### Must accomplish (obligatorios)
+
+1. **Preprocesamiento y selección de variables:** Imputar valores faltantes, codificar variables categóricas e identificar predictores relevantes mediante análisis de correlaciones. *Completado.*
+
+2. **Ajustar un modelo de regresión lineal múltiple:** Entrenar un MLR sobre datos de entrenamiento (split 80/20) con las variables seleccionadas. *Completado.*
+
+3. **Interpretar coeficientes y evaluar desempeño:** Reportar coeficientes, p-values, intervalos de confianza al 95%, R², RMSE y MAE sobre el conjunto de prueba.  *Completado.*
+
+### Expected objectives (esperados)
+
+1. **Evaluar supuestos de la regresión lineal:** Verificar linealidad, homocedasticidad, normalidad de residuos y observaciones influyentes mediante gráficos diagnósticos. *Completado — leve desviación en colas del Q-Q Plot, no crítica.*
+
+2. **Identificar variables con mayor impacto:** Determinar qué predictores explican mejor la productividad real. *Completado — `job_satisfaction_score` es el predictor dominante (r = 0.81).*
+
+3. **Comparar con un modelo benchmark:** Evaluar el MLR contra un modelo nulo y un árbol de decisión (rpart). *Completado.*
+
+### Desired objectives (deseados)
+
+1. **Comparar productividad percibida vs real:** Evaluar si los mismos predictores funcionan igual para ambas variables dependientes. *Completado — se verificó que `perceived_productivity_score` y `actual_productivity_score` tienen r > 0.9. `perceived` fue descartada como predictor por multicolinealidad extrema.*
+
+2. **Comparar con otros métodos predictivos simples:** Entrenar un árbol de decisión (rpart) con los mismos predictores y comparar métricas. *Completado — el árbol obtiene RMSE = 1.061, prácticamente idéntico al MLR (RMSE = 1.065).*
+
+---
+
+# Datos
+
+## Dataset
+
+Se utilizó el dataset **Social Media vs Productivity** obtenido de Kaggle
+([enlace](https://www.kaggle.com/datasets/mahdimashayekhi/social-media-vs-productivity)),
+que contiene aproximadamente 30.000 registros simulando comportamientos relacionados con el
+uso de redes sociales, hábitos y productividad individual.
+
+**Nota importante:** El análisis exploratorio reveló que el dataset es de **origen sintético**
+— las variables fueron generadas artificialmente, lo que limita la validez externa de los
+resultados. Esta limitación se discute en la sección de conclusiones.
+
+## Instalación y carga de paquetes
+
+```{r paquetes}
+# Instalar paquetes si no están disponibles
+if (!require(Metrics))    install.packages("Metrics")
+if (!require(rpart))      install.packages("rpart")
+if (!require(rpart.plot)) install.packages("rpart.plot")
+
+library(Metrics)
+library(rpart)
+library(rpart.plot)
+```
+
+## Carga de datos
+
+```{r carga}
+# Carga el dataset desde el archivo .RData del proyecto
+# (este archivo ya contiene el dataset social_media_vs_productivity en el entorno)
+load(".RData")
+
+# Renombramos a "bd" para usar a lo largo del notebook
+bd <- social_media_vs_productivity
+```
+
+## Exploración inicial
+
+```{r exploracion}
+# Dimensiones del dataset
+cat("Filas:", nrow(bd), "| Columnas:", ncol(bd), "\n")
+
+# Primeras 6 filas
+head(bd)
+
+# Conteo de valores faltantes por columna
+na_counts <- colSums(is.na(bd))
+na_counts[na_counts > 0]
+```
+
+---
+
+# Preprocesamiento
+
+## Imputación de valores faltantes
+
+```{r imputacion}
+# Reemplaza NA en variables numéricas con la media de cada columna
+bd[] <- lapply(bd, function(x) {
+  if (is.numeric(x)) {
+    x[is.na(x)] <- mean(x, na.rm = TRUE)
+  }
+  return(x)
+})
+
+# Verificación: no deben quedar NAs en columnas numéricas
+cat("NAs restantes en columnas numéricas:",
+    sum(sapply(bd[, sapply(bd, is.numeric)], is.na)), "\n")
+```
+
+## Análisis exploratorio de correlaciones
+
+Antes de seleccionar variables, calculamos la correlación de todas las variables numéricas
+con la variable dependiente. Este paso es fundamental para justificar la selección de predictores.
+
+```{r correlaciones, fig.height=6}
+vars_numericas <- c("actual_productivity_score", "perceived_productivity_score",
+                    "job_satisfaction_score", "stress_level", "sleep_hours",
+                    "work_hours_per_day", "number_of_notifications",
+                    "days_feeling_burnout_per_month", "weekly_offline_hours",
+                    "screen_time_before_sleep", "breaks_during_work")
+
+mat_cor <- cor(bd[, vars_numericas], use = "complete.obs")
+
+# Extraemos la correlación de cada variable con actual_productivity_score
+cor_con_y <- sort(mat_cor[, "actual_productivity_score"], decreasing = TRUE)
+cor_con_y <- cor_con_y[names(cor_con_y) != "actual_productivity_score"]
+
+# Visualización
+par(mar = c(5, 14, 3, 2))
+barplot(
+  cor_con_y,
+  horiz    = TRUE,
+  las      = 1,
+  col      = ifelse(abs(cor_con_y) > 0.1, "#065A82", "#CBD5E1"),
+  main     = "Correlación con actual_productivity_score",
+  xlab     = "Coeficiente de correlación (r)",
+  xlim     = c(-0.1, 1)
+)
+abline(v = 0, lty = 2, col = "gray50")
+```
+
+**Hallazgo clave:** Solo `job_satisfaction_score` (r = 0.81) y `perceived_productivity_score`
+(r = 0.90) tienen correlación relevante con la productividad real. El resto de variables,
+incluyendo `daily_social_media_time`, tiene |r| < 0.02 — señal clara de origen sintético del
+dataset. `perceived_productivity_score` fue descartada como predictor por multicolinealidad
+extrema (r > 0.9 con Y).
+
+## Codificación de variable categórica
+
+```{r dummy}
+# Al probar job_type completo como factor, solo la categoría "Unemployed" resultó
+# estadísticamente significativa. Por esto creamos una dummy binaria más parsimoniosa.
+bd$es_desempleado <- ifelse(bd$job_type == "Unemployed", 1, 0)
+
+cat("Distribución de es_desempleado:\n")
+table(bd$es_desempleado)
+```
+
+## División train / test
+
+```{r split}
+set.seed(123)  # Semilla para reproducibilidad
+
+idx   <- sample(1:nrow(bd), size = 0.8 * nrow(bd))
+train <- bd[idx, ]
+test  <- bd[-idx, ]
+
+cat("Train:", nrow(train), "filas | Test:", nrow(test), "filas\n")
+```
+
+**Justificación del split 80/20:** Con 30.000 registros, el 20% de prueba (6.000 obs.)
+es suficiente para obtener estimaciones estables de RMSE y MAE, sin sacrificar datos de
+entrenamiento.
+
+---
+
+# Modelos
+
+## Modelo 1: Regresión Lineal Múltiple (MLR)
+
+La regresión lineal múltiple asume una relación lineal entre los predictores y la variable
+dependiente. Es el modelo principal por su alta interpretabilidad: cada coeficiente indica
+el cambio esperado en productividad por cada unidad de cambio en el predictor, manteniendo
+los demás constantes.
+
+$$\hat{Y} = \beta_0 + \beta_1 \cdot \text{job\_satisfaction\_score} + \beta_2 \cdot \text{es\_desempleado} + \varepsilon$$
+
+```{r mlr}
+modelo_mlr <- lm(actual_productivity_score ~ job_satisfaction_score +
+                   es_desempleado, data = train)
+
+summary(modelo_mlr)
+```
+
+### Intervalos de confianza al 95%
+
+```{r ic}
+confint(modelo_mlr, level = 0.95)
+```
+
+**Interpretación de coeficientes:**
+
+- **`job_satisfaction_score` (β = 0.725, p < 2×10⁻¹⁶):** Cada punto adicional de
+  satisfacción laboral se asocia con un aumento de 0.725 puntos en productividad real.
+  Este es el predictor dominante del modelo.
+
+- **`es_desempleado` (β = 0.040, p = 0.028):** Las personas desempleadas tienen, en
+  promedio, 0.040 puntos más de productividad reportada que quienes tienen empleo,
+  controlando por satisfacción laboral. El efecto es pequeño pero estadísticamente
+  significativo.
+
+### Verificación de supuestos
+
+Los supuestos se verifican sobre una muestra de 500 observaciones para legibilidad de
+los gráficos. El modelo completo tiene 24.000 puntos, lo que hace ilegibles los plots.
+
+```{r supuestos, fig.height=6, fig.width=9}
+set.seed(123)
+datos_pequeños <- train[sample(nrow(train), 500), ]
+
+modelo_muestra <- lm(actual_productivity_score ~ job_satisfaction_score +
+                       es_desempleado, data = datos_pequeños)
+
+par(mfrow = c(2, 2))
+plot(modelo_muestra)
+par(mfrow = c(1, 1))
+```
+
+**Interpretación de los gráficos diagnósticos:**
+
+1. **Residuals vs Fitted:** Los residuos se distribuyen aleatoriamente alrededor de cero
+   sin patrón curvo. Linealidad y homocedasticidad se cumplen razonablemente.
+
+2. **Q-Q Plot:** Los puntos siguen la línea diagonal en la zona central, con leve desviación
+   en las colas (residuos leptocúrticos). Con n = 30.000, el Teorema Central del Límite
+   mitiga este efecto.  Leve desviación, no crítica.
+
+3. **Scale-Location:** Línea roja aproximadamente horizontal. Homocedasticidad adecuada.
+
+4. **Residuals vs Leverage:** Tres observaciones con leverage moderado (~0.10), ninguna
+   supera la distancia de Cook crítica. No hay observaciones influyentes problemáticas.
+
+### Métricas en test
+
+```{r metricas_mlr}
+pred_mlr <- predict(modelo_mlr, newdata = test)
+
+rmse_mlr <- rmse(test$actual_productivity_score, pred_mlr)
+mae_mlr  <- mae(test$actual_productivity_score,  pred_mlr)
+
+cat("RMSE MLR:", round(rmse_mlr, 4), "\n")
+cat("MAE  MLR:", round(mae_mlr,  4), "\n")
+```
+
+---
+
+## Modelo 2: Árbol de Decisión (rpart)
+
+El árbol de decisión particiona el espacio de predictores en regiones y predice la media
+de Y en cada región. No asume linealidad, lo que lo hace útil como benchmark: si el árbol
+supera ampliamente al MLR, indicaría relaciones no lineales que el MLR no captura.
+
+```{r arbol}
+modelo_arbol <- rpart(
+  actual_productivity_score ~ job_satisfaction_score + es_desempleado,
+  data    = train,
+  method  = "anova",       # Regresión (Y continua)
+  control = rpart.control(cp = 0.001)
+)
+
+# Tabla de complejidad: muestra el error de validación cruzada por nivel de poda
+printcp(modelo_arbol)
+```
+
+### Poda del árbol
+
+```{r poda, fig.height=5}
+# Selecciona el cp que minimiza el error de validación cruzada
+cp_optimo <- modelo_arbol$cptable[which.min(modelo_arbol$cptable[, "xerror"]), "CP"]
+cat("CP óptimo:", cp_optimo, "\n")
+
+# Poda para evitar sobreajuste
+modelo_arbol_podado <- prune(modelo_arbol, cp = cp_optimo)
+
+rpart.plot(modelo_arbol_podado, type = 4, extra = 101,
+           main = "Árbol de Decisión Podado — actual_productivity_score")
+```
+
+**Observación importante:** El árbol utilizó únicamente `job_satisfaction_score` en sus
+particiones — `es_desempleado` no fue seleccionada. Esto refuerza que `job_satisfaction_score`
+es el predictor dominante.
+
+```{r metricas_arbol}
+pred_arbol <- predict(modelo_arbol_podado, newdata = test)
+
+rmse_arbol <- rmse(test$actual_productivity_score, pred_arbol)
+mae_arbol  <- mae(test$actual_productivity_score,  pred_arbol)
+
+cat("RMSE Árbol:", round(rmse_arbol, 4), "\n")
+cat("MAE  Árbol:", round(mae_arbol,  4), "\n")
+```
+
+---
+
+## Baseline (Modelo Nulo)
+
+El modelo nulo predice siempre la media de Y del conjunto de entrenamiento. Es el piso
+mínimo que cualquier modelo debe superar para ser útil.
+
+```{r baseline}
+baseline      <- rep(mean(train$actual_productivity_score), nrow(test))
+rmse_baseline <- rmse(test$actual_productivity_score, baseline)
+mae_baseline  <- mae(test$actual_productivity_score,  baseline)
+
+cat("RMSE Baseline:", round(rmse_baseline, 4), "\n")
+cat("MAE  Baseline:", round(mae_baseline,  4), "\n")
+```
+
+---
+
+# Resultados y Comparación
+
+## Tabla comparativa
+
+```{r tabla_comparativa}
+resultados <- data.frame(
+  Modelo  = c("Baseline (modelo nulo)", "Árbol de decisión (rpart)", "MLR"),
+  RMSE    = round(c(rmse_baseline, rmse_arbol, rmse_mlr), 4),
+  MAE     = round(c(mae_baseline,  mae_arbol,  mae_mlr),  4),
+  `Reducción RMSE vs Baseline` = paste0(
+    round((1 - c(rmse_baseline, rmse_arbol, rmse_mlr) / rmse_baseline) * 100, 1), "%"
+  )
+)
+
+print(resultados, row.names = FALSE)
+```
+
+## Gráfico comparativo
+
+```{r grafico_comparativo, fig.height=5}
+modelos <- c("Baseline", "Árbol", "MLR")
+rmses   <- c(rmse_baseline, rmse_arbol, rmse_mlr)
+colores <- c("#CBD5E1", "#1C7293", "#02C39A")
+
+bp <- barplot(
+  rmses,
+  names.arg = modelos,
+  col       = colores,
+  main      = "Comparación RMSE — test set (n = 6.000)",
+  ylab      = "RMSE",
+  ylim      = c(0, max(rmses) * 1.25),
+  border    = NA
+)
+
+text(x      = bp,
+     y      = rmses + 0.04,
+     labels = round(rmses, 3),
+     cex    = 1.0,
+     font   = 2)
+
+legend("topright",
+       legend  = modelos,
+       fill    = colores,
+       border  = NA,
+       bty     = "n")
+```
+
+---
+
+# Conclusiones
+
+## Hallazgos principales
+
+1. **La satisfacción laboral es el único predictor robusto** de la productividad real en
+   este dataset (β = 0.725, p < 2×10⁻¹⁶, r = 0.81). Cada punto adicional de satisfacción
+   laboral se asocia con un aumento de 0.725 puntos de productividad real.
+
+2. **El tiempo en redes sociales no tiene efecto robusto** sobre la productividad
+   (|r| < 0.02). No fue posible incluirlo como predictor significativo en el modelo final.
+
+3. **El MLR y el árbol de decisión tienen prácticamente el mismo error** (RMSE 1.065 vs
+   1.061), lo que confirma que la relación entre satisfacción laboral y productividad es
+   esencialmente lineal. El modelo más simple e interpretable es suficiente.
+
+4. Ambos modelos reducen el RMSE en un **~40% respecto al baseline**, validando que las
+   variables seleccionadas aportan poder predictivo real.
+
+## Limitaciones
+
+- **Dataset sintético:** Las variables fueron generadas artificialmente, lo que limita la
+  validez externa de los resultados. El patrón de correlaciones casi nulas entre la mayoría
+  de variables y la productividad es una señal clara de esto.
+
+- **Un solo predictor dominante:** El modelo depende casi exclusivamente de
+  `job_satisfaction_score`. En datos reales, se esperaría un conjunto más diverso de
+  predictores significativos.
+
+- **Leve incumplimiento de normalidad:** Los residuos presentan colas más pesadas de lo
+  normal (leptocurtosis), aunque no crítico dado el tamaño muestral.
+
+## Recomendación
+
+Con base en los resultados, **intervenir en la satisfacción laboral tiene mayor impacto
+esperado sobre la productividad que restringir el uso de redes sociales**. Esta conclusión
+debe replicarse con datos observacionales reales antes de tomar decisiones organizacionales,
+dado el origen sintético del dataset utilizado.
+
+---
+
+*EII 4220 Introducción a la Ciencia de Datos — Pontificia Universidad Católica de Valparaíso*  
+*Junio 2026*
